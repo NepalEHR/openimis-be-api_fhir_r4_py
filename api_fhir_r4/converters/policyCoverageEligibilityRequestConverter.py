@@ -4,11 +4,12 @@ from api_fhir_r4.configurations import R4CoverageEligibilityConfiguration as Con
 from api_fhir_r4.converters import BaseFHIRConverter, PatientConverter
 from api_fhir_r4.models import CoverageEligibilityResponse as FHIREligibilityResponse, \
     CoverageEligibilityResponseInsuranceItem, CoverageEligibilityResponseInsurance, \
-    CoverageEligibilityResponseInsuranceItemBenefit, Money
+    CoverageEligibilityResponseInsuranceItemBenefit, Money,CoverageEligibilityResponseInsurance,Extension
 
+import urllib.request, json 
 
 class PolicyCoverageEligibilityRequestConverter(BaseFHIRConverter):
-
+    current_id=""
     @classmethod
     def to_fhir_obj(cls, eligibility_response):
         fhir_response = FHIREligibilityResponse()
@@ -20,11 +21,17 @@ class PolicyCoverageEligibilityRequestConverter(BaseFHIRConverter):
     @classmethod
     def to_imis_obj(cls, fhir_eligibility_request, audit_user_id):
         uuid = cls.build_imis_uuid(fhir_eligibility_request)
+        cls.current_id=uuid
         return ByInsureeRequest(uuid)
 
     @classmethod
     def build_fhir_insurance(cls, fhir_response, response):
         result = CoverageEligibilityResponseInsurance()
+        result.extension = []
+        extension = Extension()
+        extension.url = "https://openimis.atlassian.net/wiki/spaces/OP/pages/960069653/FHIR+extension+isHead"
+        extension.valueBoolean = cls.checkPolicyStatus(cls)
+        result.extension.append(extension)
         #cls.build_fhir_insurance_contract(result, response)
         cls.build_fhir_money_item(result, Config.get_fhir_balance_code(),
                                      response.ceiling,
@@ -37,6 +44,16 @@ class PolicyCoverageEligibilityRequestConverter(BaseFHIRConverter):
         insurance.contract = ContractConverter.build_fhir_resource_reference(
             contract)
     '''
+    def checkPolicyStatus(cls):
+        sosys_status =False
+        sosys_url = "https://sudishrestha.com.np/sosys_status_check.json"
+        with urllib.request.urlopen(sosys_url) as url:
+            data = json.loads(url.read().decode())
+            print(data["ResponseData"][0]["Status"])
+            if "Active" == data["ResponseData"][0]["Status"]:
+                sosys_status =True
+        print(cls.current_id)
+        return sosys_status
 
     @classmethod
     def build_fhir_money_item(cls, insurance, code, allowed_value, used_value):
