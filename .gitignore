@@ -1,7 +1,0 @@
-**/venv
-**/.env
-**/__pycache__
-build
-dist
-*.egg-info
-.idea
