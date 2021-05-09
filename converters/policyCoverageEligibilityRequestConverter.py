@@ -6,7 +6,10 @@ from api_fhir_r4.models import CoverageEligibilityResponse as FHIREligibilityRes
     CoverageEligibilityResponseInsuranceItem, CoverageEligibilityResponseInsurance, \
     CoverageEligibilityResponseInsuranceItemBenefit, Money,CoverageEligibilityResponseInsurance,Extension
 
+
 import urllib.request, json 
+import os
+import json
 
 class PolicyCoverageEligibilityRequestConverter(BaseFHIRConverter):
     current_id=""
@@ -29,8 +32,8 @@ class PolicyCoverageEligibilityRequestConverter(BaseFHIRConverter):
         result = CoverageEligibilityResponseInsurance()
         result.extension = []
         extension = Extension()
-        extension.url = "https://openimis.atlassian.net/wiki/spaces/OP/pages/960069653/FHIR+extension+isHead"
-        extension.valueBoolean = cls.checkPolicyStatus(cls)
+        extension.url = "sosys_policy"
+        extension.valueBoolean = cls.checkPolicyStatus(cls,extension)
         result.extension.append(extension)
         #cls.build_fhir_insurance_contract(result, response)
         cls.build_fhir_money_item(result, Config.get_fhir_balance_code(),
@@ -44,16 +47,52 @@ class PolicyCoverageEligibilityRequestConverter(BaseFHIRConverter):
         insurance.contract = ContractConverter.build_fhir_resource_reference(
             contract)
     '''
-    def checkPolicyStatus(cls):
-        sosys_status =False
-        sosys_url = "https://sudishrestha.com.np/sosys_status_check.json"
-        with urllib.request.urlopen(sosys_url) as url:
-            data = json.loads(url.read().decode())
-            print(data["ResponseData"][0]["Status"])
-            if "Active" == data["ResponseData"][0]["Status"]:
-                sosys_status =True
-        print(cls.current_id)
-        return sosys_status
+    def getSosysToken(cls):
+        auth_url = os.environ.get('sosys_url')+ str("/api/auth/login")
+        data ={
+                "UserId":os.environ.get('sosy_userid'),
+                "Password":os.environ.get('sosys_password'),
+                "wsType":os.environ.get('sosys_wstype')
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        data = json.dumps(data).encode("utf-8")
+        output=""
+        try:
+            req = urllib.request.Request(auth_url, data, headers)
+            with urllib.request.urlopen(req) as f:
+                res = f.read()
+            output =str(res.decode())
+        except Exception as e:
+            print(e)
+        token_arr=json.loads(str(output))
+        return token_arr["token"]
+
+    def checkPolicyStatus(cls,Mextension):
+        sosys_token = cls.getSosysToken(cls)
+        sosys_url = str(os.environ.get('sosys_url'))+ str("/api/health/GetContributorStatusFhir/")+str(cls.current_id)
+        output=""
+        try:
+            req = urllib.request.Request(sosys_url)
+            req.add_header("Authorization","Bearer " +str(sosys_token))
+            with urllib.request.urlopen(req) as f:
+                res = f.read()
+            output =str(res.decode())
+        except Exception as e:
+            return False
+        resJson = json.loads(str(output))
+        for resp in resJson["ResponseData"]:
+            extension = Extension()
+            extension.url = resp['class'][0]['value']
+            policyValid =resp["status"]
+            if policyValid.lower() == 'active':
+                extension.valueBoolean = True
+            else:
+                extension.valueBoolean = False
+            Mextension.append(extension)
+        # return Mextension
 
     @classmethod
     def build_fhir_money_item(cls, insurance, code, allowed_value, used_value):

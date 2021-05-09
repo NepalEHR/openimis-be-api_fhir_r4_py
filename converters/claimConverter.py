@@ -25,14 +25,15 @@ from api_fhir_r4.models import Claim as FHIRClaim, ClaimItem as FHIRClaimItem, P
 from api_fhir_r4.utils import TimeUtils, FhirUtils, DbManagerUtils
 from api_fhir_r4.exceptions import FHIRRequestProcessException
 
+from api_fhir.configurations import Stu3IdentifierConfig, Stu3ClaimConfig
 import datetime
 from django.db import connection
 class ClaimConverter(BaseFHIRConverter, ReferenceConverterMixin):
-
+    claim_uuid=""
     @classmethod
     def to_fhir_obj(cls, imis_claim):
         fhir_claim = FHIRClaim()
-        print("DONE")
+        claim_uuid= imis_claim.uuid
         cls.build_fhir_pk(fhir_claim, imis_claim.uuid)
         fhir_claim.created = imis_claim.date_claimed.isoformat()
         fhir_claim.facility = HealthcareServiceConverter.build_fhir_resource_reference(imis_claim.health_facility,imis_claim.health_facility.code)
@@ -56,15 +57,15 @@ class ClaimConverter(BaseFHIRConverter, ReferenceConverterMixin):
         cls.build_fhir_insurance(fhir_claim, imis_claim)
         cls.build_fhir_attachments(fhir_claim, imis_claim)
         return fhir_claim
-
     @classmethod
     def to_imis_obj(cls, fhir_claim, audit_user_id):
         errors = []
         imis_claim = Claim()
         cls.build_imis_date_claimed(imis_claim, fhir_claim, errors)
         cls.build_imis_health_facility(errors, fhir_claim, imis_claim)
-        cls.build_imis_identifier(imis_claim, fhir_claim, errors)
+        #cls.build_imis_identifier(imis_claim, fhir_claim, errors)
         cls.build_imis_patient(imis_claim, fhir_claim, errors)
+        cls.build_imis_schema_identifier(imis_claim, fhir_claim, errors)
         cls.build_imis_date_range(imis_claim, fhir_claim, errors)
         cls.build_imis_diagnoses(imis_claim, fhir_claim, errors)
         cls.build_imis_total_claimed(imis_claim, fhir_claim, errors)
@@ -114,32 +115,38 @@ class ClaimConverter(BaseFHIRConverter, ReferenceConverterMixin):
     #     cls.valid_condition(imis_claim.code is None, gettext('Missing the claim code'), errors)
 
     @classmethod
+    def build_imis_schema_identifier(cls, imis_claim, fhir_claim, errors):
+        value = None
+        if fhir_claim.extension:
+            for x in fhir_claim.extension:
+                if x.url == "schemeType":
+                    value = x.valueString
+        # value = cls.get_fhir_identifier_by_code(fhir_claim.identifier, Stu3IdentifierConfig.get_fhir_schema_code_type())
+        if value:
+            imis_claim.scheme_type = value
+        cls.valid_condition(imis_claim.scheme_type is None, gettext('Missing the Schema code'), errors)
+
+    @classmethod
     def build_imis_identifier(cls, imis_claim, fhir_claim, errors):
-        value = '78'
+        value = cls.get_fhir_identifier_by_code(fhir_claim.identifier, R4IdentifierConfig.get_fhir_claim_code_type())
         if value:
             imis_claim.code = cls.generateCode(value)
-            # imis_claim.code = value
-            # print(value)
-            # print(imis_claim.code)
         cls.valid_condition(imis_claim.code is None, gettext('Missing the claim code'), errors)
 
     def generateCode(claimCodeInitials):
         code= None
         sql = """\
                 DECLARE @return_value int;
-                EXEC @return_value = [dbo].[uspGenerateClaimCode] @currentYear = '""" +claimCodeInitials +"""' ;      
-                SELECT	'Return Value' = @return_value;
+                EXEC @return_value = [dbo].[uspClaimSequenceNo] @claimcodeinitials = '""" +claimCodeInitials +"""' ;      
+                SELECT	'Return Value' = @return_value; 
             """
-        # print(sql)
         with connection.cursor() as cur:
             try:
                 cur.execute(sql)
                 result_set = cur.fetchone()[0]
-                code = claimCodeInitials + str("{:08d}".format(result_set))
-                print(code)
+                code = claimCodeInitials + str("{:07d}".format(result_set))+"01C"
             finally:
-                cur.close()    
-        connection.close()
+                cur.close()
         return code
 
 
@@ -157,19 +164,25 @@ class ClaimConverter(BaseFHIRConverter, ReferenceConverterMixin):
         if fhir_claim.facility:
             _, hfId = fhir_claim.facility.reference.split("/")
             health_facility =HealthFacility.objects.all() # DbManagerUtils.get_object_or_none(HealthFacility, uuid=hfId)
-            # print(health_facility[0].code)
             if health_facility:
                 imis_claim.health_facility = health_facility[0]
                 imis_claim.health_facility_code = health_facility[0].code
+                currentYear = datetime.datetime.now()
+                code_value= "I"+str(health_facility[0].code)+str(currentYear.year)[1:]
+                claim_code= cls.generateCode(code_value)
+                imis_claim.code = claim_code
         cls.valid_condition(imis_claim.health_facility is None, gettext('Missing the facility reference'), errors)
 
     @classmethod
     def build_fhir_billable_period(cls, fhir_claim, imis_claim):
         billable_period = Period()
-        if imis_claim.date_from:
-            billable_period.start = imis_claim.date_from.isoformat()
-        if imis_claim.date_to:
-            billable_period.end = imis_claim.date_to.isoformat()
+        try:
+            if imis_claim.date_from:
+                billable_period.start = imis_claim.date_from.isoformat()
+            if imis_claim.date_to:
+                billable_period.end = imis_claim.date_to.isoformat()
+        except:
+            billable_period = None
         fhir_claim.billablePeriod = billable_period
 
     @classmethod
@@ -246,10 +259,7 @@ class ClaimConverter(BaseFHIRConverter, ReferenceConverterMixin):
             for diagnosis in diagnoses:
                 diagnosis_type = cls.get_diagnosis_type(diagnosis)
                 diagnosis_code = cls.get_diagnosis_code(diagnosis)
-                print(diagnosis_code)
-                print(diagnosis_type)
                 if diagnosis_type == ImisClaimIcdTypes.ICD_0.value:
-                    print("ICDO")
                     imis_claim.icd = cls.get_claim_diagnosis_by_code(diagnosis_code)
                     imis_claim.icd_code = diagnosis_code
                 elif diagnosis_type == ImisClaimIcdTypes.ICD_1.value:
@@ -602,7 +612,10 @@ class ClaimConverter(BaseFHIRConverter, ReferenceConverterMixin):
     @classmethod
     def build_fhir_value_attachment(cls, imis_attachment):
         attachment = Attachment()
-        attachment.creation = imis_attachment.date.isoformat()
+        try:
+            attachment.creation = imis_attachment.date.isoformat()
+        except:
+            print("")
         attachment.data = cls.get_attachment_content(imis_attachment)
         attachment.contentType = imis_attachment.mime
         attachment.title = imis_attachment.filename

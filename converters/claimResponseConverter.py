@@ -1,6 +1,6 @@
 import datetime
 
-from claim.models import Feedback, ClaimItem, ClaimService, Claim
+from claim.models import Feedback, ClaimItem, ClaimService, Claim,SosysSubProduct
 from django.db.models import Subquery
 from location.models import HealthFacility
 from medical.models import Item, Service, Diagnosis
@@ -26,6 +26,8 @@ class ClaimResponseConverter(BaseFHIRConverter):
     @classmethod
     def to_fhir_obj(cls, imis_claim):
         fhir_claim_response = ClaimResponse()
+        fhir_claim_response.extension = []
+        fhir_claim_response.extension.append(cls.getSchemeInformation(imis_claim.subProduct_id))
         fhir_claim_response.created = TimeUtils.date().isoformat()
         fhir_claim_response.request = ClaimConverter.build_fhir_resource_reference(imis_claim)
         cls.build_fhir_pk(fhir_claim_response, imis_claim.uuid)
@@ -45,7 +47,17 @@ class ClaimResponseConverter(BaseFHIRConverter):
         cls.build_fhir_diagnoses(fhir_claim_response, imis_claim)
         cls.build_fhir_adjustment(fhir_claim_response, imis_claim)
         return fhir_claim_response
-               
+    
+    def getSchemeInformation(schid):
+        sorex =  list(SosysSubProduct.objects.filter(id = schid))
+        extension = Extension()
+        extension.url = "scheme"
+        if len(sorex) > 0:
+            extension.valueString = sorex[0].sch_name_eng
+        else:
+            extension.valueString = "None"
+        return extension
+                
     @classmethod
     def to_imis_obj(cls, fhir_claim_response, audit_user_id):
         errors = []
